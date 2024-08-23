@@ -1,64 +1,66 @@
 # Solana Rug Pull Script
 
-Este script permite configurar varias billeteras de Solana y realizar compras y ventas de tokens utilizando la API de Pump.fun. Además, las billeteras configuradas y los tokens comprados se persisten en archivos para su uso posterior, y todas las operaciones realizadas se registran en un archivo de log.
+This script allows you to configure multiple Solana wallets and perform token purchases and sales using the Pump.fun API. Additionally, the configured wallets and purchased tokens are saved in files for later use, and all operations performed are logged in a log file.
 
 ## Requisitos
 
-1.Python 3.7 o superior
-2.Pip (gestor de paquetes de Python)
+1. Python 3.7 or higher
+2. Pip (Python package manager)
 
-## Configuración del Entorno Virtual (venv)
+## Virtual Environment Setup (venv)
 
-Es recomendable crear un entorno virtual (venv) para evitar conflictos entre las dependencias de este proyecto y otras aplicaciones de Python en su sistema.
+It is recommended to create a virtual environment (venv) to avoid conflicts between the dependencies of this project and other Python applications on your system.
 
-1. Crear el entorno virtual
+1. Create the virtual environment
 
 ```bash
 python3 -m venv venv
 ```
 
-2. Activar el entorno virtual
+2. Activate the virtual environment
 
 ```bash
 source venv/bin/activate
 ```
 
-3. Instalar las dependencias
-   Asegúrate de que el archivo requirements.txt esté en el mismo directorio que el script.
+3. Install the dependencies
+   Ensure that the requirements.txt file is in the same directory as the script.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Ejecutar el Script
+## Running the Script
 
-Una vez que hayas configurado y activado el entorno virtual, y hayas instalado las dependencias, puedes ejecutar el script:
+Once you have set up and activated the virtual environment and installed the dependencies, you can run the script:
 
 ```bash
 make start
 ```
 
-## Uso del Script
+## Script Usage
 
-El script te guiará a través de un menú donde podrás:
+The script will guide you through a menu where you can:
 
-1. Configurar Billeteras: Configurar una o más billeteras de Solana, asignando un porcentaje de la compra total a cada una.
-2. Comprar un Meme Coin: Comprar tokens utilizando las billeteras configuradas.
-3. Vender el Token Comprado: Seleccionar y vender un token previamente comprado utilizando las billeteras configuradas.
-4. Ver Billeteras Configuradas: Mostrar una lista de las billeteras configuradas, con su porcentaje asignado y el total de tokens comprados.
-5. Salir: Salir del script.
+1. Configure Wallets: Set up one or more Solana wallets, assigning a percentage of the total purchase to each.
+2. Buy a Meme Coin: Purchase tokens using the configured wallets.
+3. Sell Purchased Token: Select and sell a previously purchased token using the configured wallets.
+4. View Configured Wallets: Display a list of the configured wallets, with their assigned percentage and total tokens purchased.
+5. View the logs
+6. Reset wallets configuration
+7. Exit: Exit the script.
 
-## Nota
+## Note
 
-1. Persistencia: Las billeteras configuradas y los tokens comprados se guardan en archivos de texto (wallets.txt y tokens.txt) para su uso en sesiones futuras.
-2. Log de Operaciones: Todas las operaciones realizadas se registran en un archivo de log (wallet_operations.log).
+1. Persistence: The configured wallets and purchased tokens are saved in text files (wallets.txt and tokens.txt) for use in future sessions.
+2. Operation Log: All performed operations are logged in a log file (wallet_operations.log).
 
-## Desactivar el Entorno Virtual
+## Deactivating the Virtual Environment
 
-Una vez que hayas terminado de trabajar, puedes desactivar el entorno virtual con el siguiente comando:
+Deactivating the Virtual Environment
 
 ```bash
     deactivate
 ```
 
-¡Ahora estás listo para usar el script y hacer rug pulls en la red Solana!
+You are now ready to use the script and perform rug pulls on the Solana network!
