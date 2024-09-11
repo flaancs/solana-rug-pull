@@ -1,5 +1,9 @@
 import json
 import requests
+import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
+from tenacity import retry, wait_fixed, stop_after_attempt, RetryError
 from solders.transaction import VersionedTransaction
 from solders.keypair import Keypair as SoldersKeypair
 from solders.commitment_config import CommitmentLevel
@@ -16,6 +20,7 @@ pump_fun_api_url = "https://pumpportal.fun/api/trade-local"
 wallets_file = "wallets.txt"
 tokens_file = "tokens.txt"
 log_file = "wallet_operations.log"
+transaction_fee_sol = 0.003
 
 wallets = []
 purchased_tokens = []
@@ -27,30 +32,17 @@ def ensure_files_exist():
     open(log_file, "a").close()
 
 
-def clear_terminal():
-    os.system("cls" if os.name == "nt" else "clear")
+def log_operation(operation):
+    try:
+        with open(log_file, "a") as f:
+            f.write(f"{operation}\n")
+    except Exception as e:
+        print(Fore.RED + f"Error writing to log: {str(e)}")
 
 
 def show_banner():
     print(Fore.RED + Style.BRIGHT + "SOLANA RUG PULL")
     print(Fore.YELLOW + "=" * 30 + "\n")
-
-
-def log_operation(operation):
-    with open(log_file, "a") as f:
-        f.write(f"{operation}\n")
-
-
-def persist_wallets():
-    with open(wallets_file, "w") as f:
-        for wallet in wallets:
-            wallet_data = {
-                "public_key": str(wallet["keypair"].pubkey()),
-                "json": wallet["json"],
-                "percentage": wallet["percentage"],
-                "total_tokens": wallet["total_tokens"],
-            }
-            f.write(json.dumps(wallet_data) + "\n")
 
 
 def load_wallets():
@@ -81,6 +73,28 @@ def load_tokens():
             for line in f:
                 token_data = json.loads(line.strip())
                 purchased_tokens.append(token_data)
+
+
+def show_wallets():
+    if not wallets:
+        print("No wallets configured.\n")
+        return
+
+    wallet_info = [
+        (
+            wallet["keypair"].pubkey(),
+            wallet["percentage"],
+            wallet["total_tokens"],
+        )
+        for wallet in wallets
+    ]
+    print(
+        tabulate(
+            wallet_info,
+            headers=["Wallet Address", "Percentage (%)", "Total Tokens"],
+        )
+    )
+    print("\n")
 
 
 def configure_wallets():
@@ -127,49 +141,60 @@ def configure_wallets():
     persist_wallets()
 
 
-def show_wallets():
-    if not wallets:
-        print("No wallets configured.\n")
-        return
-
-    wallet_info = [
-        (
-            wallet["keypair"].pubkey(),
-            wallet["percentage"],
-            wallet["total_tokens"],
-        )
-        for wallet in wallets
-    ]
-    print(
-        tabulate(
-            wallet_info,
-            headers=["Wallet Address", "Percentage (%)", "Total Tokens"],
-        )
-    )
-    print("\n")
+def persist_wallets():
+    with open(wallets_file, "w") as f:
+        for wallet in wallets:
+            wallet_data = {
+                "public_key": str(wallet["keypair"].pubkey()),
+                "json": wallet["json"],
+                "percentage": wallet["percentage"],
+                "total_tokens": wallet["total_tokens"],
+            }
+            f.write(json.dumps(wallet_data) + "\n")
 
 
+@retry(wait=wait_fixed(3), stop=stop_after_attempt(10))
 def send_transaction_to_solana(tx_bytes, keypair):
-    tx = VersionedTransaction.from_bytes(tx_bytes)
-    commitment = CommitmentLevel.Confirmed
-    config = RpcSendTransactionConfig(preflight_commitment=commitment)
-    tx_payload = SendVersionedTransaction(tx, config)
+    try:
+        print(Fore.YELLOW + "Sending transaction to Solana network...")
+        tx = VersionedTransaction.from_bytes(tx_bytes)
+        commitment = CommitmentLevel.Confirmed
+        config = RpcSendTransactionConfig(preflight_commitment=commitment)
+        tx_payload = SendVersionedTransaction(tx, config)
 
-    response = requests.post(
-        url=rpc_url,
-        headers={"Content-Type": "application/json"},
-        data=tx_payload.to_json(),
-    )
-    tx_signature = response.json().get("result", None)
+        response = requests.post(
+            url=rpc_url,
+            headers={"Content-Type": "application/json"},
+            data=tx_payload.to_json(),
+        )
+        tx_signature = response.json().get("result", None)
 
-    if tx_signature:
-        print(f"Transaction successful: https://solscan.io/tx/{tx_signature}")
-        log_operation(f"Transaction successful: https://solscan.io/tx/{tx_signature}")
-    else:
-        print(f"Error sending transaction: {response.text}")
-        log_operation(f"Error sending transaction: {response.text}")
+        if tx_signature:
+            print(
+                Fore.GREEN
+                + f"Transaction successful: https://solscan.io/tx/{tx_signature}"
+            )
+            log_operation(
+                f"Transaction successful: https://solscan.io/tx/{tx_signature}"
+            )
+        else:
+            error_code = response.json().get("error", {}).get("code")
+            error_msg = response.json().get("error", {}).get("message")
+
+            if error_code == -32003:
+                raise Exception("Transaction signature verification failure")
+            elif error_code == 429:
+                raise Exception("Too many requests, retrying...")
+
+            print(Fore.RED + f"Error sending transaction: {response.text}")
+            raise Exception(f"Error sending transaction: {response.text}")
+
+    except Exception as e:
+        print(Fore.RED + f"Error: {str(e)}")
+        raise
 
 
+@retry(wait=wait_fixed(2), stop=stop_after_attempt(5))
 def buy_from_pump_fun(
     wallet,
     token_address,
@@ -179,7 +204,13 @@ def buy_from_pump_fun(
     priority_fee=0.005,
     pool="pump",
 ):
-    public_key = str(wallet.pubkey())
+    public_key = str(wallet["keypair"].pubkey())
+    print(
+        Fore.YELLOW
+        + f"Initiating purchase for {amount} SOL of {token_name} with wallet {public_key}..."
+    )
+
+    adjusted_amount = max(amount - transaction_fee_sol, 0)
 
     response = requests.post(
         pump_fun_api_url,
@@ -187,7 +218,7 @@ def buy_from_pump_fun(
             "publicKey": public_key,
             "action": "buy",
             "mint": token_address,
-            "amount": amount,
+            "amount": adjusted_amount,
             "denominatedInSol": "true",
             "slippage": slippage,
             "priorityFee": priority_fee,
@@ -197,31 +228,50 @@ def buy_from_pump_fun(
 
     if response.status_code == 200:
         tx_bytes = response.content
-        send_transaction_to_solana(tx_bytes, wallet)
+        send_transaction_to_solana(tx_bytes, wallet["keypair"])
         log_operation(
-            f"Bought {amount} SOL of {token_name} ({token_address}) with wallet {public_key}"
+            f"Bought {adjusted_amount} SOL of {token_name} ({token_address}) with wallet {public_key}"
         )
-        return amount
+        print(
+            Fore.GREEN
+            + f"Successfully bought {adjusted_amount} SOL of {token_name} with wallet {public_key}."
+        )
+        return adjusted_amount
     else:
-        print(f"Error buying for wallet {public_key}: {response.text}")
-        log_operation(f"Error buying for wallet {public_key}: {response.text}")
-        return 0
+        error_msg = f"Error buying for wallet {public_key}: {response.text}"
+        print(Fore.RED + error_msg)
+        log_operation(error_msg)
+        raise Exception(error_msg)
 
 
+@retry(wait=wait_fixed(2), stop=stop_after_attempt(5))
 def sell_on_pump_fun(
     wallet, token_address, token_name, slippage=10, priority_fee=0.005, pool="pump"
 ):
-    public_key = str(wallet.pubkey())
-    total_tokens = wallet["total_tokens"]
+    public_key = str(wallet["keypair"].pubkey())
+    total_tokens = wallet.get("total_tokens", 0)
 
-    if total_tokens > 0:
+    print(
+        Fore.YELLOW
+        + f"Attempting to sell {total_tokens} tokens of {token_name} with wallet {public_key}..."
+    )
+
+    if total_tokens == 0:
+        error_msg = f"No tokens available to sell in wallet {public_key}."
+        print(Fore.RED + error_msg)
+        log_operation(error_msg)
+        raise Exception(error_msg)
+
+    adjusted_total_tokens = max(total_tokens - transaction_fee_sol, 0)
+
+    if adjusted_total_tokens > 0:
         response = requests.post(
             pump_fun_api_url,
             data={
                 "publicKey": public_key,
                 "action": "sell",
                 "mint": token_address,
-                "amount": total_tokens,
+                "amount": adjusted_total_tokens,
                 "denominatedInSol": "false",
                 "slippage": slippage,
                 "priorityFee": priority_fee,
@@ -231,22 +281,135 @@ def sell_on_pump_fun(
 
         if response.status_code == 200:
             tx_bytes = response.content
-            send_transaction_to_solana(tx_bytes, wallet)
+            send_transaction_to_solana(tx_bytes, wallet["keypair"])
             log_operation(
-                f"Sold {total_tokens} tokens of {token_name} ({token_address}) with wallet {public_key}"
+                f"Sold {adjusted_total_tokens} tokens of {token_name} ({token_address}) with wallet {public_key}"
             )
+            print(
+                Fore.GREEN
+                + f"Successfully sold {adjusted_total_tokens} tokens of {token_name} with wallet {public_key}."
+            )
+            time.sleep(2)
             return True
         else:
-            print(f"Error selling for wallet {public_key}: {response.text}")
-            log_operation(f"Error selling for wallet {public_key}: {response.text}")
-            return False
+            error_msg = f"Error selling for wallet {public_key}: {response.text}"
+            print(Fore.RED + error_msg)
+            log_operation(error_msg)
+            raise Exception(error_msg)
     else:
-        print(f"No tokens available to sell in wallet {public_key}.")
-        log_operation(f"No tokens available to sell in wallet {public_key}.")
-        return False
+        error_msg = (
+            f"Not enough tokens to cover the transaction fee in wallet {public_key}."
+        )
+        print(Fore.RED + error_msg)
+        log_operation(error_msg)
+        raise Exception(error_msg)
 
 
-def buy_token():
+async def async_sell_token(token_to_sell):
+    all_successful = True
+    tasks = []
+
+    with ThreadPoolExecutor() as executor:
+        loop = asyncio.get_running_loop()
+        for wallet in wallets:
+            tasks.append(
+                loop.run_in_executor(
+                    executor,
+                    handle_retries,
+                    sell_on_pump_fun,
+                    wallet,
+                    token_to_sell["address"],
+                    token_to_sell["name"],
+                )
+            )
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            if isinstance(result, Exception):
+                print(Fore.RED + f"Sale failed: {str(result)}")
+                log_operation(f"Sale failed: {str(result)}")
+                all_successful = False
+
+        if all_successful:
+            purchased_tokens.remove(token_to_sell)
+            persist_tokens()
+            print(Fore.GREEN + "Sale completed.\n")
+        else:
+            print(
+                Fore.RED
+                + "Sale failed for one or more wallets. Please check the logs for details."
+            )
+
+    input(Fore.CYAN + "Press any key to continue...")
+
+
+def handle_retries(func, *args):
+    try:
+        func(*args)
+    except RetryError as e:
+        error_msg = f"RetryError: {str(e)}"
+        print(Fore.RED + error_msg)
+        log_operation(error_msg)
+        raise e
+    except Exception as e:
+        error_msg = f"Error: {str(e)}"
+        print(Fore.RED + error_msg)
+        log_operation(error_msg)
+        raise e
+
+
+async def async_buy_token(token_address, token_name, total_sol):
+    all_successful = True
+    tasks = []
+
+    with ThreadPoolExecutor() as executor:
+        loop = asyncio.get_running_loop()
+        for wallet in wallets:
+            sol_to_spend = total_sol * wallet["percentage"] / 100
+            print(
+                Fore.YELLOW
+                + f"Buying {sol_to_spend} SOL of {token_name} with wallet {wallet['keypair'].pubkey()}."
+            )
+            tasks.append(
+                loop.run_in_executor(
+                    executor,
+                    buy_from_pump_fun,
+                    wallet,
+                    token_address,
+                    sol_to_spend,
+                    token_name,
+                )
+            )
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            if isinstance(result, Exception):
+                print(Fore.RED + f"Purchase failed: {str(result)}")
+                log_operation(f"Purchase failed: {str(result)}")
+                all_successful = False
+
+        if all_successful:
+            purchased_tokens.append(
+                {
+                    "address": token_address,
+                    "name": token_name,
+                    "amount": sum(wallet["total_tokens"] for wallet in wallets),
+                }
+            )
+            persist_tokens()
+            print(Fore.GREEN + "Purchase completed.\n")
+        else:
+            print(
+                Fore.RED
+                + "Purchase failed for one or more wallets. Please check the logs for details."
+            )
+
+    input(Fore.CYAN + "Press any key to continue...")
+
+
+async def buy_token():
     if not wallets:
         print("Please configure wallets before buying a token.\n")
         return
@@ -254,40 +417,10 @@ def buy_token():
     token_address = input("Enter the token address: ")
     token_name = input("Enter a name to identify the token: ")
     total_sol = float(input("Enter the total amount of SOL to buy: "))
-
-    all_successful = True
-
-    for wallet in wallets:
-        sol_to_spend = total_sol * wallet["percentage"] / 100
-        print(
-            f"Buying {sol_to_spend} SOL of {token_name} ({token_address}) with wallet {wallet['keypair'].pubkey()}."
-        )
-        total_tokens = buy_from_pump_fun(
-            wallet["keypair"], token_address, sol_to_spend, token_name
-        )
-        if total_tokens == 0:
-            all_successful = False
-            break
-        wallet["total_tokens"] = total_tokens
-
-    if all_successful:
-        purchased_tokens.append(
-            {
-                "address": token_address,
-                "name": token_name,
-                "amount": sum(wallet["total_tokens"] for wallet in wallets),
-            }
-        )
-        persist_tokens()
-        print("Purchase completed.\n")
-    else:
-        print(
-            Fore.RED
-            + "Purchase failed for one or more wallets. Please check the logs for details."
-        )
+    await async_buy_token(token_address, token_name, total_sol)
 
 
-def sell_token():
+async def sell_token():
     if not wallets:
         print("Please configure wallets before selling a token.\n")
         return
@@ -305,24 +438,7 @@ def sell_token():
     choice = int(input("Select the token to sell: ")) - 1
     if 0 <= choice < len(purchased_tokens):
         token_to_sell = purchased_tokens[choice]
-        all_successful = True
-        for wallet in wallets:
-            success = sell_on_pump_fun(
-                wallet["keypair"], token_to_sell["address"], token_to_sell["name"]
-            )
-            if not success:
-                all_successful = False
-                break
-
-        if all_successful:
-            purchased_tokens.pop(choice)
-            persist_tokens()
-            print("Sale completed.\n")
-        else:
-            print(
-                Fore.RED
-                + "Sale failed for one or more wallets. Please check the logs for details."
-            )
+        await async_sell_token(token_to_sell)
     else:
         print("Invalid selection.\n")
 
@@ -358,13 +474,12 @@ def watch_logs():
             print("No logs available.")
 
 
-def show_menu():
+async def show_menu():
     ensure_files_exist()
     load_wallets()
     load_tokens()
 
     while True:
-        clear_terminal()
         show_banner()
         print(Fore.CYAN + "Menu:")
         print(Fore.YELLOW + "1. Configure wallets")
@@ -377,29 +492,23 @@ def show_menu():
         choice = input(Fore.CYAN + "Select an option: ")
 
         if choice == "1":
-            clear_terminal()
             show_banner()
             configure_wallets()
         elif choice == "2":
-            clear_terminal()
             show_banner()
-            buy_token()
+            await buy_token()
         elif choice == "3":
-            clear_terminal()
             show_banner()
-            sell_token()
+            await sell_token()
         elif choice == "4":
-            clear_terminal()
             show_banner()
             show_wallets()
             input("Press Enter to continue...")
         elif choice == "5":
-            clear_terminal()
             show_banner()
             watch_logs()
             input("Press Enter to continue...")
         elif choice == "6":
-            clear_terminal()
             show_banner()
             reset_wallets_configuration()
         elif choice == "7":
@@ -410,4 +519,4 @@ def show_menu():
             input("Press Enter to continue...")
 
 
-show_menu()
+asyncio.run(show_menu())
